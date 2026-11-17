@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""
+xcrun compatibility shim for on-device iOS / rootless Darwin toolchains.
+Emulates essential Xcode xcrun commands, SDK path inquiries, and bridges
+codesign invocations to ldid.
+"""
+
+import sys
+import os
+import subprocess
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        sys.exit(0)
+
+    # 1. SDK path resolution
+    if '--show-sdk-path' in args:
+        sdk_candidates = [
+            '/var/jb/usr/share/SDKs/iPhoneOS16.5.sdk',
+            '/var/jb/usr/share/SDKs/iPhoneOS.sdk',
+            '/var/jb/Library/Frameworks',
+            '/'
+        ]
+        for candidate in sdk_candidates:
+            if os.path.isdir(candidate):
+                print(candidate)
+                sys.exit(0)
+        print('/')
+        sys.exit(0)
+
+    # 2. SDK version resolution
+    if '--show-sdk-version' in args:
+        print('16.5')
+        sys.exit(0)
+
+    # 3. codesign_allocate binary resolution
+    if 'codesign_allocate' in args:
+        for p in ['/var/jb/usr/bin/codesign_allocate', '/usr/bin/codesign_allocate']:
+            if os.path.isfile(p):
+                print(p)
+                sys.exit(0)
+        print('codesign_allocate')
+        sys.exit(0)
+
+    # 4. codesign emulation -> bridge to ldid
+    if 'codesign' in args:
+        idx = args.index('codesign')
+        c_args = args[idx + 1:]
+        ent_xml = None
+        target_bin = None
+        i = 0
+        while i < len(c_args):
+            a = c_args[i]
+            if a == '--entitlements' and i + 1 < len(c_args):
+                ent_xml = c_args[i + 1]
+                i += 2
+            elif a in ('-s', '-f', '--force', '--'):
+                if a == '-s' and i + 1 < len(c_args):
+                    i += 2
+                else:
+                    i += 1
+            else:
+                target_bin = a
+                i += 1
+
+        ldid_bin = '/var/jb/usr/bin/ldid' if os.path.isfile('/var/jb/usr/bin/ldid') else 'ldid'
+        if target_bin and os.path.exists(target_bin):
+            if ent_xml and os.path.exists(ent_xml):
+                subprocess.run([ldid_bin, f'-S{ent_xml}', target_bin], check=False)
+            else:
+                subprocess.run([ldid_bin, '-s', target_bin], check=False)
+        sys.exit(0)
+
+    # 5. Passthrough fallback execution
+    cmd = None
+    for a in args:
+        if not a.startswith('-'):
+            cmd = a
+            break
+
+    if cmd:
+        res = subprocess.run(args)
+        sys.exit(res.returncode)
+
+    sys.exit(0)
+
+if __name__ == '__main__':
+    main()
